@@ -1,0 +1,82 @@
+% 读取MIDI文件（需安装第三方工具包，如midi工具箱）
+addpath('path_to_midi_toolbox'); % 下载地址：https://github.com/miditoolbox/1.1
+midi = readmidi('piano_sample.mid');
+
+% 提取音符信息
+Notes = midiInfo(midi, 0);
+onset = Notes(:,1);   % 起始时间
+pitch = Notes(:,3);   % 音高
+velocity = Notes(:,4);% 力度
+duration = Notes(:,2) - Notes(:,1); % 持续时间
+
+% 计算节奏特征（BPM）
+[beats_per_minute, ~] = tempoderection(Notes(:,1));
+
+% 和弦分析（简化版）
+chord_sequence = {};
+for t = 0:0.5:max(onset) % 以0.5秒为窗口
+    window_notes = pitch(onset >= t & onset < t+0.5);
+    if ~isempty(window_notes)
+        chord = unique(floor(window_notes/12)*12); % 根音识别
+        chord_sequence{end+1} = chord;
+    end
+end
+
+% 读取音频文件
+[y, Fs] = audioread('piano_sample.wav');
+
+% MFCC特征提取
+coeffs = mfcc(y, Fs, 'NumCoeffs', 13); % 需要Audio Toolbox
+mfcc_mean = mean(coeffs);
+mfcc_std = std(coeffs);
+
+% 动态范围计算
+dynamic_range = max(y) - min(y);
+
+% 节奏强度分析
+[~, ~, ~, tempo] = spectralCentroid(y, Fs); % 简化节奏估计
+
+% 构建特征矩阵（示例）
+features = [beats_per_minute, dynamic_range, mfcc_mean(1:5), mfcc_std(1:3)];
+
+% 标准化处理
+features_normalized = zscore(features);
+
+% PCA降维
+[coeff, score, latent] = pca(features_normalized);
+reduced_features = score(:,1:3); % 保留前3个主成分
+
+% 假设已有用户评分数据（用户ID，曲目ID，评分）
+ratings = [1 1 5;
+           1 2 4;
+           2 1 3;
+           2 3 5]; 
+
+% 转换为矩阵格式
+R = zeros(max(ratings(:,1)), max(ratings(:,2)));
+for i = 1:size(ratings,1)
+    R(ratings(i,1), ratings(i,2)) = ratings(i,3);
+end
+
+% 协同过滤（使用矩阵分解）
+[U, V] = nnmf(R, 10); % 非负矩阵分解，10个潜在因子
+
+% 基于内容的相似度计算
+content_sim = pdist2(reduced_features, reduced_features, 'cosine');
+
+% 混合推荐权重调整
+alpha = 0.7; % 协同过滤权重
+hybrid_scores = alpha*(U*V') + (1-alpha)*(1-content_sim); % 需归一化处理
+
+% 为目标用户生成推荐
+user_id = 1;
+[~, top_indices] = sort(hybrid_scores(user_id,:), 'descend');
+
+% 显示推荐理由
+fprintf('推荐理由：\n');
+for i = 1:3
+    track_id = top_indices(i);
+    fprintf('曲目%d - 节奏%.1f BPM, 动态范围%.2f, 音色相似度%.2f\n',...
+            track_id, features(track_id,1), features(track_id,2),...
+            1-content_sim(user_id,track_id));
+end
